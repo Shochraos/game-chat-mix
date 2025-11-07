@@ -20,7 +20,7 @@ Current limitations:
    ```bash
    chmod +x gamechat_mix.sh gamechat_game.sh gamechat_chat.sh gamechat_reset.sh
    
-3. Configure the script variables in 'gamechat_mix.sh':
+3. Configure the script variables in `gamechat_mix.sh`:
    - Set the `HW_SINK=` variable to your hardware sink
    - You can find the name of your sink by running `pactl list sinks short`
    
