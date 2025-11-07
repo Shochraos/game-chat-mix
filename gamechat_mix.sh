@@ -108,7 +108,6 @@ route_once(){
 }
 
 # MAIN
-
 ensure_remap_sink "$DISCORD_SINK" "$HW_SINK" "Discord"
 ensure_remap_sink "$CATCHALL_SINK" "$HW_SINK" "All Other Audio"
 

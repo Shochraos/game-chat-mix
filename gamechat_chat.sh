@@ -18,5 +18,5 @@ adjust_volume() {
     pactl set-sink-volume "$sink" "${new}%"
 }
 
-adjust_volume discord_sink 2   # Increase by 5
-adjust_volume catchall_sink -2 # Decrease by 5
+adjust_volume discord_sink 2
+adjust_volume catchall_sink -2
