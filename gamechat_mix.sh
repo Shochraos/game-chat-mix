@@ -6,7 +6,7 @@ set -u
 # HARDWARE SINK
 DISCORD_SINK="${DISCORD_SINK:-discord_sink}"
 CATCHALL_SINK="${CATCHALL_SINK:-catchall_sink}"
-HW_SINK="alsa_output.usb-Topping_DX3_Pro_-00.HiFi__Headphones__sink"
+HW_SINK="name__sink"
 
 find_module_for_sink(){
     local sink_name="${1:-}"
