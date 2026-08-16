@@ -17,6 +17,7 @@ writeShellApplication {
   meta = {
     description = "Shifts the volume balance between the chat and game sinks";
     homepage = "https://github.com/Shochraos/game-chat-mix";
+    license = lib.licenses.mit;
     platforms = lib.platforms.linux;
   };
 }
