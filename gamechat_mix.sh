@@ -102,70 +102,56 @@ move_sink_input_safe() {
   pactl move-sink-input "$id" "$dest" >/dev/null 2>&1
 }
 
-inspect_sink_input() {
-  local id="${1:-}"
-  if [[ -z $id ]]; then
-    printf '\n'
-    return
-  fi
-  pactl list sink-inputs 2>/dev/null | awk -v id="$id" '
-      $1=="Sink" && $2=="Input" && $3=="#"id {found=1; next}
-      found && $1=="Sink" && $2=="Input" {exit}
-      found {
-        if (/node.name/ && nodename=="") {
-            line=$0; sub(/.*node.name[ \t]*=[ \t]*/, "", line); gsub(/^[ \t]*"/, "", line); gsub(/"[ \t]*$/, "", line); nodename=line
-        }
-        if (/Name:/ && name=="") { name=$2 }
-        if (/Sink:/ && cursink=="") { cursink=$2 }
-        if (/application.name/ && app=="") { app=$3 }
-        if (/client.name/ && client=="") { client=$3 }
-        if (/node.description/ && nd=="") { nd=$3 }
-        if (/device.description/ && dev=="") { dev=$3 }
-        if (/application.process.binary/ && bin=="") { bin=$3 }
-        if (/application.process.id/ && pid=="") { pid=$3 }
-        if (/media.class/ && media=="") { media=$2 }
-      }
-      END {
-        gsub(/"/,"",name); gsub(/"/,"",app); gsub(/"/,"",client); gsub(/"/,"",nd); gsub(/"/,"",dev); gsub(/"/,"",nodename); gsub(/"/,"",bin);
-        print (nodename?nodename:"") "|" (cursink?cursink:"") "|" (app?app:"") "|" (client?client:"") "|" (nd?nd:"") "|" (dev?dev:"") "|" (bin?bin:"") "|" (pid?pid:"") "|" (media?media:"")
-      }'
+declare -A SINK_NAME_BY_INDEX
+
+load_sink_names() {
+  SINK_NAME_BY_INDEX=()
+  local idx name rest
+  while IFS=$'\t' read -r idx name rest; do
+    if [[ $idx =~ ^[0-9]+$ ]]; then SINK_NAME_BY_INDEX[$idx]="$name"; fi
+  done < <(pactl list short sinks 2>/dev/null)
 }
 
-should_ignore() {
-  local id="${1:-}"
-  if ! [[ $id =~ ^[0-9]+$ ]]; then return 0; fi
+list_sink_inputs() {
+  pactl list sink-inputs 2>/dev/null | awk '
+      function propval(s) {
+        sub(/^[^=]*=[ \t]*/, "", s)
+        gsub(/^"|"$/, "", s)
+        return s
+      }
+      function flush() {
+        if (id != "") print id "\037" cur "\037" node "\037" app "\037" client "\037" bin
+        id=""; cur=""; node=""; app=""; client=""; bin=""
+      }
+      $1=="Sink" && $2=="Input" && $3 ~ /^#[0-9]+$/ { flush(); id=substr($3, 2); next }
+      id=="" { next }
+      $1=="Sink:" && cur=="" { cur=$2; next }
+      $1=="node.name" && node=="" { node=propval($0); next }
+      $1=="application.name" && app=="" { app=propval($0); next }
+      $1=="client.name" && client=="" { client=propval($0); next }
+      $1=="application.process.binary" && bin=="" { bin=propval($0); next }
+      END { flush() }'
+}
 
-  IFS='|' read -r NODE_NAME CURSINK APP CLIENT ND DEV BIN MEDIA <<<"$(inspect_sink_input "$id" || echo "|||||||")"
-  NODE_NAME="${NODE_NAME:-}"
-  CURSINK="${CURSINK:-}"
-  APP="${APP:-}"
-  CLIENT="${CLIENT:-}"
-  ND="${ND:-}"
-  DEV="${DEV:-}"
-  BIN="${BIN:-}"
-  MEDIA="${MEDIA:-}"
-
-  if [[ $NODE_NAME == output.* ]]; then return 0; fi
-  if [[ $CURSINK == "$DISCORD_SINK" || $CURSINK == "$CATCHALL_SINK" ]]; then return 0; fi
-  local ldev="${DEV,,}"
-  if [[ $ldev == *discord* || $ldev == *catchall* ]]; then return 0; fi
-  local la="${APP,,}"
-  local lc="${CLIENT,,}"
-  local lnd="${ND,,}"
-  local lb="${BIN,,}"
-  if [[ $la == *webrtc* || $lc == *discord* || $lnd == *webrtc* || $lb == *discord* ]]; then return 0; fi
-  if [[ -n $MEDIA && ${MEDIA,,} == *sink* ]]; then return 0; fi
-
-  return 1
+is_chat_stream() {
+  local ident="${1,,}"
+  [[ $ident == *discord* || $ident == *webrtc* ]]
 }
 
 route_once() {
-  pactl list short sink-inputs 2>/dev/null | while read -r ID SINK REST; do
-    if ! [[ $ID =~ ^[0-9]+$ ]]; then continue; fi
-    if [[ $SINK == "$DISCORD_SINK" || $SINK == "$CATCHALL_SINK" ]]; then continue; fi
-    if should_ignore "$ID"; then continue; fi
-    move_sink_input_safe "$ID" "$CATCHALL_SINK"
-  done
+  load_sink_names
+  local id cur node app client bin dest
+  while IFS=$'\037' read -r id cur node app client bin; do
+    if ! [[ $id =~ ^[0-9]+$ ]]; then continue; fi
+    if [[ $node == output.* ]]; then continue; fi
+    if is_chat_stream "$app|$client|$bin|$node"; then
+      dest="$DISCORD_SINK"
+    else
+      dest="$CATCHALL_SINK"
+    fi
+    if [[ ${SINK_NAME_BY_INDEX[$cur]:-} == "$dest" ]]; then continue; fi
+    move_sink_input_safe "$id" "$dest"
+  done < <(list_sink_inputs)
 }
 
 # MAIN
