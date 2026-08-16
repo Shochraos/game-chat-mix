@@ -26,5 +26,20 @@
           default = gamechat_mix;
         }
       );
+
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShellNoCC {
+          packages = [
+            pkgs.bash
+            pkgs.gawk
+            pkgs.nixfmt
+            pkgs.pulseaudio
+            pkgs.shellcheck
+            pkgs.shfmt
+          ];
+        };
+      });
+
+      formatter = forAllSystems (pkgs: pkgs.nixfmt);
     };
 }
