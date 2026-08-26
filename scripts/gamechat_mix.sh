@@ -12,6 +12,7 @@ INITIAL_VOLUME="${INITIAL_VOLUME:-50}"
 EVENT_DEBOUNCE="${EVENT_DEBOUNCE:-0.05}"
 RETRY_DELAY="${RETRY_DELAY:-1}"
 RETRY_DELAY_MAX="${RETRY_DELAY_MAX:-30}"
+LOCK_FILE="${LOCK_FILE:-${XDG_RUNTIME_DIR:-/tmp}/gamechat_mix.lock}"
 
 declare -A SINK_INDEX_BY_NAME=()
 declare -A OWNED_MODULE=()
@@ -24,6 +25,14 @@ log() {
 die() {
   log "$*"
   exit 2
+}
+
+acquire_lock() {
+  exec 9>"$LOCK_FILE" || die "cannot open lock file '${LOCK_FILE}'"
+  if ! flock -n 9; then
+    log "another instance already holds '${LOCK_FILE}', nothing to do"
+    exit 0
+  fi
 }
 
 probe_chat_match() {
@@ -283,7 +292,7 @@ stop_subscriber() {
 
 watch_events() {
   local status=0
-  exec 3< <(pactl subscribe 2>/dev/null)
+  exec 3< <(pactl subscribe 2>/dev/null 9>&-)
   SUBSCRIBER_PID=$!
   handle_events <&3 || status=$?
   exec 3<&-
@@ -293,6 +302,7 @@ watch_events() {
 
 main() {
   validate_config
+  acquire_lock
   trap 'exit 0' INT TERM
   trap stop_subscriber EXIT
 

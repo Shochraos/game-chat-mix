@@ -4,6 +4,7 @@
   coreutils,
   gawk,
   pulseaudio,
+  util-linux,
 }:
 writeShellApplication {
   name = "gamechat_mix";
@@ -12,11 +13,12 @@ writeShellApplication {
     coreutils
     gawk
     pulseaudio
+    util-linux
   ];
 
   bashOptions = [ "nounset" ];
 
-  text = builtins.readFile ../gamechat_mix.sh;
+  text = builtins.readFile ../scripts/gamechat_mix.sh;
 
   meta = {
     description = "Routing daemon that keeps chat and game audio on separate remap sinks";

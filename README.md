@@ -14,6 +14,46 @@ Two bash scripts that implement the "Game-Chat-Mix" dial found on many gaming he
 - Both sinks start at 50% so there is headroom in both directions. A sink is only rebuilt when its master changes, and its volume is carried over when that happens — unplugging a DAC does not throw away your balance, and restarting the daemon does not touch it.
 - The daemon is self-healing: it waits with exponential backoff instead of exiting when no usable master sink exists yet, reconnects on its own if the `pactl` event stream ends, and recreates the sinks if something unloads them.
 - Bursts of events are coalesced, so a game opening a dozen streams at once costs one routing pass rather than a dozen.
+- Only one daemon runs at a time. It holds a `flock` for its whole lifetime, so a second copy — started by hand, by a second install method, or by a supervisor — logs a line and exits 0 instead of fighting over the remap sinks.
+- **WirePlumber must be told not to restore the two sinks' volumes**, or it overrides the 50% start. See "WirePlumber volume restore" below; every installation method ships the opt-out.
+
+## WirePlumber volume restore
+
+WirePlumber persists and restores the volume of any `Audio/*` node that has no
+device routes, which includes both remap sinks. Its state is keyed on
+`media.name`, and `module-remap-sink` derives that from the description — so the
+sinks are stored as `Audio/Sink:media.name:Discord\sinput` and
+`All\sinput` in `~/.local/state/wireplumber/stream-properties`.
+
+The effect is a bug: leave the chat sink at 0%, reboot, and WirePlumber restores
+0% over the 50% the daemon just set, because the restore fires on node creation
+and wins the race. The daemon already carries volumes across a master change by
+itself, so WirePlumber's copy is redundant as well as harmful.
+
+`wireplumber/99-gamechat-no-volume-restore.conf` turns it off for exactly these
+two sinks, which disables both the save and the restore (WirePlumber gates them
+on the same flag). Note the flag cannot be set through `sink_properties` —
+`module-remap-sink` drops unknown keys — so it has to be a WirePlumber rule.
+
+`standalone/install.sh` installs the file. With Nix, express the same rule
+declaratively:
+
+```nix
+services.pipewire.wireplumber.extraConfig."99-gamechat-no-volume-restore" = {
+  "stream.rules" = [
+    {
+      matches = [
+        { "node.name" = "discord_sink"; }
+        { "node.name" = "catchall_sink"; }
+      ];
+      actions.update-props."state.restore-props" = false;
+    }
+  ];
+};
+```
+
+Stale entries already in `stream-properties` are harmless — with the rule in
+place they are never read again.
 
 ## Configuration
 
@@ -33,6 +73,7 @@ Everything is an environment variable; there is nothing to edit in the scripts.
 | `EVENT_DEBOUNCE` | `0.05` | Seconds to keep collecting events before acting on a burst |
 | `RETRY_DELAY` | `1` | Seconds before the first retry; doubles on repeated failure |
 | `RETRY_DELAY_MAX` | `30` | Ceiling for that backoff |
+| `LOCK_FILE` | `$XDG_RUNTIME_DIR/gamechat_mix.lock` | Single-instance lock. A second daemon holding no lock exits immediately; point two daemons at different files only if they also drive different sinks. |
 
 `gamechat_balance.sh`:
 
@@ -49,7 +90,23 @@ with a message instead of misbehaving.
 
 List candidate sink names with `pactl list short sinks`.
 
-## Usage as a Nix flake
+## Installation
+
+Each installation method lives in its own subfolder. The two scripts live
+**once** in `scripts/`; every method references them rather than copying them.
+
+| Method | Folder | What it adds |
+| --- | --- | --- |
+| Nix flake | `nix/` | `packages.<system>.gamechat_mix` and `packages.<system>.gamechat_balance` |
+| Standalone | `standalone/` | both scripts in `~/.local/bin` plus a systemd user unit |
+| DankMaterialShell plugin | `dms/` | a DankBar mix slider, and optionally the daemon |
+
+The methods are independent but not exclusive: the DMS plugin can either manage
+the daemon itself or leave it to the systemd unit installed by one of the other
+two. The daemon takes a `flock` either way, so a second copy exits instead of
+fighting over the remap sinks.
+
+### Nix flake
 
 Add the input:
 
@@ -108,60 +165,44 @@ Then bind `gamechat_balance game`, `gamechat_balance chat` and `gamechat_balance
 
 Without a flake, `nix run github:Shochraos/game-chat-mix` starts the daemon and `nix run github:Shochraos/game-chat-mix#gamechat_balance -- chat` shifts the balance.
 
-## Usage without Nix
+### Standalone
 
-Requirements: `bash`, PipeWire with PipeWire-Pulse running (`pactl`), `gawk`, `coreutils`.
+Requirements: `bash`, PipeWire with PipeWire-Pulse running (`pactl`), `gawk`,
+`coreutils`, `util-linux`.
 
-1. Clone the repository:
+```bash
+git clone https://github.com/Shochraos/game-chat-mix.git
+cd game-chat-mix
+./standalone/install.sh
+```
 
-   ```bash
-   git clone https://github.com/Shochraos/game-chat-mix.git
-   cd game-chat-mix
-   ```
+See [`standalone/README.md`](standalone/README.md) for the destinations it
+writes to and how to remove it again.
 
-2. Start the daemon and check that both sinks appear:
+### DankMaterialShell plugin
 
-   ```bash
-   ./gamechat_mix.sh &
-   pactl list short sinks
-   ```
+A composite [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell)
+plugin: a DankBar pill showing the current mix, a popout slider that moves the
+balance by dragging, and an `IpcHandler` so `dms ipc call gamechat …` works.
 
-3. Select the chat sink ("Discord") as the output device inside your chat client.
-
-4. Keep the daemon running across logins with a systemd user unit at `~/.config/systemd/user/gamechat-mix.service`:
-
-   ```ini
-   [Unit]
-   Description=Dynamically sorts audio streams into sinks to independently manage volume
-   PartOf=graphical-session.target
-   Wants=pipewire-pulse.service
-   After=pipewire-pulse.service
-
-   [Service]
-   Type=simple
-   ExecStart=%h/game-chat-mix/gamechat_mix.sh
-   Restart=always
-   RestartSec=5
-
-   [Install]
-   WantedBy=graphical-session.target
-   ```
-
-   ```bash
-   systemctl --user daemon-reload
-   systemctl --user enable --now gamechat-mix.service
-   ```
-
-5. Bind the balance verbs to hotkeys in your desktop environment. `./gamechat_balance.sh game` gives more game and less chat, `./gamechat_balance.sh chat` does the reverse, and `./gamechat_balance.sh reset` puts both sinks back to 50%.
+See [`dms/README.md`](dms/README.md) for installation and settings.
 
 ## Development
 
 `nix develop` provides `shellcheck`, `shfmt`, `nixfmt` and `pactl`. `nix build` runs shellcheck over both scripts, so it doubles as the lint gate; `nix fmt` formats the Nix files and `shfmt -d` checks the shell ones against the 2-space indent pinned in `.editorconfig`.
 
-## Scripts
+## Layout
 
-- `gamechat_mix.sh`: creates the two remap sinks on the current hardware sink and keeps routing new streams into the catch-all sink.
-- `gamechat_balance.sh`: takes `game`, `chat` or `reset` and moves the volume balance between the two sinks by `STEP` percentage points per invocation, clamped to 0–100%.
+```
+scripts/      both scripts, the single source of truth
+wireplumber/  the volume-restore opt-out, shared by every install method
+nix/          flake package definitions
+standalone/   systemd user unit + installer for a non-Nix machine
+dms/          DankMaterialShell composite plugin
+```
+
+- `scripts/gamechat_mix.sh`: creates the two remap sinks on the current hardware sink and keeps routing new streams into the catch-all sink. Single-instance, guarded by `flock`.
+- `scripts/gamechat_balance.sh`: takes `game`, `chat` or `reset` and moves the volume balance between the two sinks by `STEP` percentage points per invocation, clamped to 0–100%.
 
 ## Limitations
 

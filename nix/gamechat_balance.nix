@@ -12,7 +12,7 @@ writeShellApplication {
     pulseaudio
   ];
 
-  text = builtins.readFile ../gamechat_balance.sh;
+  text = builtins.readFile ../scripts/gamechat_balance.sh;
 
   meta = {
     description = "Shifts the volume balance between the chat and game sinks";

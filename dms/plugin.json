@@ -1,0 +1,28 @@
+{
+    "id": "gamechatMix",
+    "name": "Game / Chat Mix",
+    "description": "DankBar slider for the game/chat audio balance: game on the left, chat on the right, dragging moves the mix",
+    "version": "1.0.0",
+    "author": "Shochraos",
+    "type": "composite",
+    "capabilities": [
+        "dankbar-widget",
+        "daemon",
+        "audio"
+    ],
+    "icon": "tune",
+    "components": {
+        "widget": "./GameChatMixWidget.qml",
+        "daemon": "./GameChatMixDaemon.qml"
+    },
+    "settings": "./GameChatMixSettings.qml",
+    "requires_dms": ">=1.5.0",
+    "dependencies": [
+        "gamechat_mix"
+    ],
+    "permissions": [
+        "settings_read",
+        "settings_write",
+        "process"
+    ]
+}
