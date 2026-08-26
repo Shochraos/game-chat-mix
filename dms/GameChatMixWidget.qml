@@ -110,7 +110,6 @@ PluginComponent {
             id: mixPopout
 
             headerText: "Game / Chat Mix"
-            detailsText: root.ready ? "Drag to move the balance. Game on the left, chat on the right." : "Waiting for the gamechat_mix sinks to appear."
             showCloseButton: true
 
             headerActions: Component {
