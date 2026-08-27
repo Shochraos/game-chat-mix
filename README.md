@@ -1,8 +1,8 @@
-# Game-Chat-Mix
+# game-chat-mix
 
 Two bash scripts that implement the "Game-Chat-Mix" dial found on many gaming headsets, on top of PipeWire / PipeWire-Pulse.
 
-> **AI Disclaimer**: The current implementation of both scripts, the Nix packaging and this README were written with AI assistance (Anthropic's Claude). Every change was verified against a live PipeWire session, but these scripts load and unload PulseAudio modules and change sink volumes on your machine — read them before you run them, and see the licence for the absence of any warranty.
+> **AI disclaimer:** The current implementation of both scripts, the Nix packaging and this README were written with AI assistance (Anthropic's Claude). Every change was verified against a live PipeWire session, but these scripts load and unload PulseAudio modules and change sink volumes on your machine — read them before you run them, and see the licence for the absence of any warranty.
 
 `gamechat_mix.sh` runs as a daemon. It creates two `module-remap-sink` sinks on top of your hardware output — one for the chat application, one for everything else — and continuously moves newly appearing streams into the catch-all sink. `gamechat_balance.sh` then shifts volume between the two sinks in fixed steps, so a single keybind pair moves the balance between game and voice audio without touching either application.
 
@@ -187,10 +187,6 @@ balance by dragging, and an `IpcHandler` so `dms ipc call gamechat …` works.
 
 See [`dms/README.md`](dms/README.md) for installation and settings.
 
-## Development
-
-`nix develop` provides `shellcheck`, `shfmt`, `nixfmt` and `pactl`. `nix build` runs shellcheck over both scripts, so it doubles as the lint gate; `nix fmt` formats the Nix files and `shfmt -d` checks the shell ones against the 2-space indent pinned in `.editorconfig`.
-
 ## Layout
 
 ```
@@ -209,6 +205,10 @@ dms/          DankMaterialShell composite plugin
 - Only Discord and WebRTC are recognised as chat applications out of the box; widen `CHAT_MATCH` to add more. The filter matches application, client, binary and node names.
 - The chat client's output device still has to be selected manually inside the client.
 - Both sinks sit at 50% by default so the balance has headroom in both directions, which costs a little absolute volume.
+
+## Development
+
+`nix develop` provides `shellcheck`, `shfmt`, `nixfmt` and `pactl`. `nix build` runs shellcheck over both scripts, so it doubles as the lint gate; `nix fmt` formats the Nix files and `shfmt -d` checks the shell ones against the 2-space indent pinned in `.editorconfig`.
 
 ## License
 
