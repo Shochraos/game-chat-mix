@@ -33,9 +33,9 @@ PluginSettings {
     StringSetting {
         settingKey: "mixCommand"
         label: "Daemon Command"
-        description: "Command used when the daemon is managed by the shell. Resolved from PATH."
-        placeholder: "gamechat_mix"
-        defaultValue: "gamechat_mix"
+        description: "Command used when the daemon is managed by the shell. Leave empty to use the gamechat_mix bundled by the Nix package, or a PATH lookup."
+        placeholder: "auto"
+        defaultValue: ""
     }
 
     StringSetting {

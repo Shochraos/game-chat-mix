@@ -15,28 +15,45 @@ the `gamechat_balance` keybinds visibly moves the slider.
 
 ## Installation
 
-`gamechat_mix` must be reachable, either already running (see
-[`../standalone/README.md`](../standalone/README.md) or the flake) or on `PATH`
-so the plugin can start it itself.
+Every install of the plugin carries the routing scripts with it — the daemon
+is not a separate installation. The only choice is whether the daemon runs the
+Nix-pinned wrapper or the sibling script next to the QML:
+
+**Nix, hermetic:** the `dms_plugin` package bakes the pinned `gamechat_mix`
+wrapper into the QML:
+
+```nix
+programs.dank-material-shell.plugins.gamechatMix = {
+  enable = true;
+  src = inputs.game-chat-mix.packages.${pkgs.stdenv.hostPlatform.system}.dms_plugin;
+};
+```
+
+**Nix, plain source** — or the DMS plugin registry, or a manual copy:
+
+```nix
+programs.dank-material-shell.plugins.gamechatMix = {
+  enable = true;
+  src = "${inputs.game-chat-mix}/dms";
+};
+```
 
 ```bash
 git clone https://github.com/Shochraos/game-chat-mix.git
 cp -r game-chat-mix/dms ~/.config/DankMaterialShell/plugins/gamechatMix
 ```
 
+Here the daemon is the sibling `gamechat_mix.sh`, run on whatever `bash`,
+`gawk`, `flock` and `pactl` PATH provides — on NixOS that is your generation's
+system environment (keep `pulseaudio` in `systemPackages` for `pactl`; `gawk`
+and `util-linux` are in the default environment).
+
+`manageDaemon` defaults to `true` in every case: the plugin starts and
+supervises the daemon itself, no systemd user unit needed. Set
+`settings.manageDaemon = false` only when something else already runs it.
+
 Then Settings → Plugins → **Scan for Plugins**, enable **Game / Chat Mix**, and
 add the widget via Settings → Appearance → DankBar Layout.
-
-With Nix and home-manager, point the DMS module at the `dms/` subdirectory
-instead of copying:
-
-```nix
-programs.dank-material-shell.plugins.gamechatMix = {
-  enable = true;
-  src = "${inputs.game-chat-mix}/dms";
-  settings.manageDaemon = false;
-};
-```
 
 Either way the WirePlumber volume-restore opt-out is still required, or the
 sinks come back at their last volume rather than 50% — see "WirePlumber volume
@@ -47,7 +64,7 @@ restore" in the [top-level README](../README.md).
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `manageDaemon` | `true` | Start and supervise `gamechat_mix` from the shell. Set `false` when a systemd user unit already runs it. |
-| `mixCommand` | `gamechat_mix` | Command used when the daemon is managed by the shell, resolved from `PATH`. |
+| `mixCommand` | *(empty)* | Command used when the daemon is managed by the shell. Empty picks the Nix-pinned wrapper when present, else the sibling `gamechat_mix.sh` next to the QML. |
 | `gameSink` | `catchall_sink` | Must match `CATCHALL_SINK` in the daemon's environment. |
 | `chatSink` | `discord_sink` | Must match `DISCORD_SINK` in the daemon's environment. |
 | `step` | `2` | Percentage points moved per `dms ipc call gamechat game\|chat`. Match `STEP` so both surfaces agree. |

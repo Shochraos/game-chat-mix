@@ -18,7 +18,7 @@ writeShellApplication {
 
   bashOptions = [ "nounset" ];
 
-  text = builtins.readFile ../scripts/gamechat_mix.sh;
+  text = builtins.readFile ../dms/gamechat_mix.sh;
 
   meta = {
     description = "Routing daemon that keeps chat and game audio on separate remap sinks";

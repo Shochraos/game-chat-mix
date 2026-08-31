@@ -19,9 +19,10 @@
         pkgs:
         let
           gamechat_mix = pkgs.callPackage ./nix/gamechat_mix.nix { };
+          dms_plugin = pkgs.callPackage ./nix/dms_plugin.nix { inherit gamechat_mix; };
         in
         {
-          inherit gamechat_mix;
+          inherit gamechat_mix dms_plugin;
           gamechat_balance = pkgs.callPackage ./nix/gamechat_balance.nix { };
           default = gamechat_mix;
         }

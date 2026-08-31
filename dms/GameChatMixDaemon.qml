@@ -11,7 +11,9 @@ PluginComponent {
     readonly property int step: pluginData.step || 2
     readonly property int resetVolume: 50
     readonly property bool manageDaemon: pluginData.manageDaemon !== undefined ? pluginData.manageDaemon : true
-    readonly property string mixCommand: pluginData.mixCommand || "gamechat_mix"
+    readonly property string bakedMixCommand: "@gamechat_mix@"
+    readonly property string siblingMixScript: Qt.resolvedUrl("gamechat_mix.sh").toString().replace("file://", "")
+    readonly property string mixCommand: pluginData.mixCommand || (bakedMixCommand.startsWith("/") ? bakedMixCommand : siblingMixScript)
 
     readonly property var chatNode: Pipewire.nodes.values.find(node => node.name === root.chatSinkName) ?? null
     readonly property var gameNode: Pipewire.nodes.values.find(node => node.name === root.gameSinkName) ?? null

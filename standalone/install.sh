@@ -23,8 +23,8 @@ require() {
 require install
 require pactl
 
-install -Dm755 "${root}/scripts/gamechat_mix.sh" "${BIN_DIR}/gamechat_mix"
-install -Dm755 "${root}/scripts/gamechat_balance.sh" "${BIN_DIR}/gamechat_balance"
+install -Dm755 "${root}/dms/gamechat_mix.sh" "${BIN_DIR}/gamechat_mix"
+install -Dm755 "${root}/dms/gamechat_balance.sh" "${BIN_DIR}/gamechat_balance"
 log "installed gamechat_mix and gamechat_balance into '${BIN_DIR}'"
 
 case ":${PATH}:" in

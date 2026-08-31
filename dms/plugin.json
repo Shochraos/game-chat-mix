@@ -2,7 +2,7 @@
     "id": "gamechatMix",
     "name": "Game / Chat Mix",
     "description": "DankBar slider for the game/chat audio balance: game on the left, chat on the right, dragging moves the mix",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "author": "Shochraos",
     "type": "composite",
     "capabilities": [

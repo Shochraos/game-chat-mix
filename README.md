@@ -1,8 +1,8 @@
-# game-chat-mix
+# Game-Chat-Mix
 
 Two bash scripts that implement the "Game-Chat-Mix" dial found on many gaming headsets, on top of PipeWire / PipeWire-Pulse.
 
-> **AI disclaimer:** The current implementation of both scripts, the Nix packaging and this README were written with AI assistance (Anthropic's Claude). Every change was verified against a live PipeWire session, but these scripts load and unload PulseAudio modules and change sink volumes on your machine — read them before you run them, and see the licence for the absence of any warranty.
+> **AI Disclaimer**: The current implementation of both scripts, the Nix packaging and this README were written with AI assistance (Anthropic's Claude). Every change was verified against a live PipeWire session, but these scripts load and unload PulseAudio modules and change sink volumes on your machine. Read them before you run them, and see the licence for the absence of any warranty.
 
 `gamechat_mix.sh` runs as a daemon. It creates two `module-remap-sink` sinks on top of your hardware output — one for the chat application, one for everything else — and continuously moves newly appearing streams into the catch-all sink. `gamechat_balance.sh` then shifts volume between the two sinks in fixed steps, so a single keybind pair moves the balance between game and voice audio without touching either application.
 
@@ -11,7 +11,7 @@ Two bash scripts that implement the "Game-Chat-Mix" dial found on many gaming he
 - Both sinks are remaps of the same hardware sink, so they share one physical output.
 - The master sink is resolved at runtime from `pactl get-default-sink`, and the daemon re-syncs whenever the PulseAudio server changes or a sink appears or disappears (device hotplug, default-sink switch). It never stacks a remap on top of one of its own remaps.
 - Everything except the chat client's own streams is moved to the catch-all sink; the chat client is pointed at the chat sink once, inside the client itself.
-- Both sinks start at 50% so there is headroom in both directions. A sink is only rebuilt when its master changes, and its volume is carried over when that happens — unplugging a DAC does not throw away your balance, and restarting the daemon does not touch it.
+- Both sinks start at 50% so there is headroom in both directions. A sink is only rebuilt when its master changes, and its volume is carried over when that happens. Unplugging a DAC does not throw away your balance, and restarting the daemon does not touch it.
 - The daemon is self-healing: it waits with exponential backoff instead of exiting when no usable master sink exists yet, reconnects on its own if the `pactl` event stream ends, and recreates the sinks if something unloads them.
 - Bursts of events are coalesced, so a game opening a dozen streams at once costs one routing pass rather than a dozen.
 - Only one daemon runs at a time. It holds a `flock` for its whole lifetime, so a second copy — started by hand, by a second install method, or by a supervisor — logs a line and exits 0 instead of fighting over the remap sinks.
@@ -93,13 +93,14 @@ List candidate sink names with `pactl list short sinks`.
 ## Installation
 
 Each installation method lives in its own subfolder. The two scripts live
-**once** in `scripts/`; every method references them rather than copying them.
+**once**, inside the `dms/` plugin directory; every method references them
+rather than copying them.
 
 | Method | Folder | What it adds |
 | --- | --- | --- |
-| Nix flake | `nix/` | `packages.<system>.gamechat_mix` and `packages.<system>.gamechat_balance` |
+| Nix flake | `nix/` | `packages.<system>.gamechat_mix`, `gamechat_balance` and the self-contained `dms_plugin` |
 | Standalone | `standalone/` | both scripts in `~/.local/bin` plus a systemd user unit |
-| DankMaterialShell plugin | `dms/` | a DankBar mix slider, and optionally the daemon |
+| DankMaterialShell plugin | `dms/` | a DankBar mix slider plus the routing scripts it runs |
 
 The methods are independent but not exclusive: the DMS plugin can either manage
 the daemon itself or leave it to the systemd unit installed by one of the other
@@ -119,7 +120,7 @@ Add the input:
 }
 ```
 
-The flake exposes `packages.<system>.gamechat_mix` (the daemon, also `default`) and `packages.<system>.gamechat_balance` (the keybind helper).
+The flake exposes `packages.<system>.gamechat_mix` (the daemon, also `default`), `packages.<system>.gamechat_balance` (the keybind helper) and `packages.<system>.dms_plugin`, a DankMaterialShell plugin whose closure carries the daemon.
 
 NixOS module — install the helper and enable PipeWire-Pulse:
 
@@ -185,20 +186,32 @@ A composite [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell
 plugin: a DankBar pill showing the current mix, a popout slider that moves the
 balance by dragging, and an `IpcHandler` so `dms ipc call gamechat …` works.
 
+The plugin directory carries the routing scripts, so every install — registry,
+manual copy, plain Nix source — is self-contained: the plugin starts and
+supervises the daemon itself (`manageDaemon` defaults to `true`), with no
+systemd unit and no PATH entry. The `dms_plugin` package is the hermetic Nix
+variant: it bakes the pinned `gamechat_mix` wrapper into the plugin.
+
+```nix
+programs.dank-material-shell.plugins.gamechatMix = {
+  enable = true;
+  src = inputs.game-chat-mix.packages.${pkgs.stdenv.hostPlatform.system}.dms_plugin;
+};
+```
+
 See [`dms/README.md`](dms/README.md) for installation and settings.
 
 ## Layout
 
 ```
-scripts/      both scripts, the single source of truth
+dms/          DankMaterialShell composite plugin; both scripts live here as the single source
 wireplumber/  the volume-restore opt-out, shared by every install method
 nix/          flake package definitions
 standalone/   systemd user unit + installer for a non-Nix machine
-dms/          DankMaterialShell composite plugin
 ```
 
-- `scripts/gamechat_mix.sh`: creates the two remap sinks on the current hardware sink and keeps routing new streams into the catch-all sink. Single-instance, guarded by `flock`.
-- `scripts/gamechat_balance.sh`: takes `game`, `chat` or `reset` and moves the volume balance between the two sinks by `STEP` percentage points per invocation, clamped to 0–100%.
+- `dms/gamechat_mix.sh`: creates the two remap sinks on the current hardware sink and keeps routing new streams into the catch-all sink. Single-instance, guarded by `flock`.
+- `dms/gamechat_balance.sh`: takes `game`, `chat` or `reset` and moves the volume balance between the two sinks by `STEP` percentage points per invocation, clamped to 0–100%.
 
 ## Limitations
 
