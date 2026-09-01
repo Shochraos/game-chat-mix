@@ -32,11 +32,16 @@
         default = pkgs.mkShellNoCC {
           packages = [
             pkgs.bash
+            pkgs.bats
             pkgs.gawk
             pkgs.nixfmt
+            pkgs.pipewire
+            pkgs.procps
             pkgs.pulseaudio
             pkgs.shellcheck
             pkgs.shfmt
+            pkgs.util-linux
+            pkgs.wireplumber
           ];
         };
       });

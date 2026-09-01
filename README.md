@@ -1,5 +1,7 @@
 # Game-Chat-Mix
 
+[![CI](https://github.com/Shochraos/game-chat-mix/actions/workflows/ci.yml/badge.svg)](https://github.com/Shochraos/game-chat-mix/actions/workflows/ci.yml)
+
 Two bash scripts that implement the "Game-Chat-Mix" dial found on many gaming headsets, on top of PipeWire / PipeWire-Pulse.
 
 > **AI Disclaimer**: The current implementation of both scripts, the Nix packaging and this README were written with AI assistance (Anthropic's Claude). Every change was verified against a live PipeWire session, but these scripts load and unload PulseAudio modules and change sink volumes on your machine. Read them before you run them, and see the licence for the absence of any warranty.
@@ -16,6 +18,19 @@ Two bash scripts that implement the "Game-Chat-Mix" dial found on many gaming he
 - Bursts of events are coalesced, so a game opening a dozen streams at once costs one routing pass rather than a dozen.
 - Only one daemon runs at a time. It holds a `flock` for its whole lifetime, so a second copy — started by hand, by a second install method, or by a supervisor — logs a line and exits 0 instead of fighting over the remap sinks.
 - **WirePlumber must be told not to restore the two sinks' volumes**, or it overrides the 50% start. See "WirePlumber volume restore" below; every installation method ships the opt-out.
+
+## Tests
+
+CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
+
+- **nix** — builds all three packages (shellcheck runs inside the builds), `nix flake check`, shfmt and nixfmt checks, and a bake proof for the plugin package: the daemon wrapper in the closure, the `@gamechat_mix@` substitution applied, and the sibling-script fallback present.
+- **e2e** — runs the BATS suite in `tests/` against hermetic headless PipeWire sessions (own `XDG_RUNTIME_DIR`, stock WirePlumber config plus the volume-restore opt-out). It covers stream routing by client name, sink adoption and recreation, master changes, event-stream reconnect, the config validation paths, the flock single-instance guard, clean shutdown, and the standalone installer with a stubbed `systemctl`.
+
+The whole suite runs locally and never touches the running desktop session:
+
+```bash
+nix develop -c bats tests/
+```
 
 ## WirePlumber volume restore
 

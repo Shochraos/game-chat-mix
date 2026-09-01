@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix:
+    name: Nix build, lint and plugin proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Build packages (shellcheck runs inside the builds)
+        run: nix build --no-link .#gamechat_mix .#gamechat_balance .#dms_plugin
+
+      - name: Flake check
+        run: nix flake check
+
+      - name: shfmt
+        run: >
+          nix develop -c shfmt -d dms/gamechat_mix.sh dms/gamechat_balance.sh
+          tests/test_helper.bash tests/fixtures/systemctl-shim.sh
+
+      - name: nixfmt
+        run: |
+          nix develop -c nixfmt flake.nix nix/gamechat_mix.nix nix/gamechat_balance.nix nix/dms_plugin.nix
+          git diff --exit-code
+
+      - name: Plugin bake proof
+        run: |
+          out=$(nix build --no-link --print-out-paths .#dms_plugin)
+          nix path-info -r "$out" | grep -q -- '-gamechat_mix$'
+          grep -q 'bakedMixCommand: "/nix/store/' "$out/GameChatMixDaemon.qml"
+          if grep -q '@gamechat_mix@' "$out/GameChatMixDaemon.qml"; then
+            echo "unsubstituted @gamechat_mix@ placeholder left in the built QML" >&2
+            exit 1
+          fi
+          grep -q 'siblingMixScript' "$out/GameChatMixDaemon.qml"
+          test -x "$out/gamechat_mix.sh"
+          test -x "$out/gamechat_balance.sh"
+
+  e2e:
+    name: PipeWire end-to-end tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+
+      - name: Run e2e suite (hermetic PipeWire sessions)
+        run: nix develop -c bats tests/
+
+      - name: Upload session logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gcm-session-logs
+          path: /tmp/gcm-e2e-logs-*/
+          if-no-files-found: ignore
