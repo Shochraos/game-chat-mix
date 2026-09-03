@@ -160,7 +160,14 @@ daemon_stop() {
   fi
   [ -n "$pid" ] || return 0
   kill -TERM "$pid" 2>/dev/null
+  (
+    sleep 10
+    kill -KILL "$pid" 2>/dev/null
+  ) &
+  local watchdog=$!
   wait "$pid" 2>/dev/null
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
   rm -f "$GCM_RUN/daemon.pid"
   DAEMON_PID=""
 }

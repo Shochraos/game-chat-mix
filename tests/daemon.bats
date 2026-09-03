@@ -126,13 +126,24 @@ load 'test_helper'
   [ -n "$sub" ]
 
   kill -TERM "$DAEMON_PID"
-  wait "$DAEMON_PID"
+  (
+    sleep 10
+    kill -KILL "$DAEMON_PID" 2>/dev/null
+  ) &
+  local watchdog=$!
+  local daemon_status=0
+  wait "$DAEMON_PID" || daemon_status=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  [ "$daemon_status" -eq 0 ]
   wait_until 5 daemon_gone
   ! kill -0 "$sub" 2>/dev/null
 }
 
 @test "INT shuts down cleanly and reaps the subscriber" {
+  set -m
   daemon_start
+  set +m
   wait_sink_exists "$GCM_CHAT_SINK"
 
   local sub
@@ -140,7 +151,16 @@ load 'test_helper'
   [ -n "$sub" ]
 
   kill -INT "$DAEMON_PID"
-  wait "$DAEMON_PID"
+  (
+    sleep 10
+    kill -KILL "$DAEMON_PID" 2>/dev/null
+  ) &
+  local watchdog=$!
+  local daemon_status=0
+  wait "$DAEMON_PID" || daemon_status=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  [ "$daemon_status" -eq 0 ]
   wait_until 5 daemon_gone
   ! kill -0 "$sub" 2>/dev/null
 }

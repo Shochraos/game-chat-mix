@@ -24,7 +24,7 @@ Two bash scripts that implement the "Game-Chat-Mix" dial found on many gaming he
 CI (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
 
 - **nix** — builds all three packages (shellcheck runs inside the builds), `nix flake check`, shfmt and nixfmt checks, and a bake proof for the plugin package: the daemon wrapper in the closure, the `@gamechat_mix@` substitution applied, and the sibling-script fallback present.
-- **e2e** — runs the BATS suite in `tests/` against hermetic headless PipeWire sessions (own `XDG_RUNTIME_DIR`, stock WirePlumber config plus the volume-restore opt-out). It covers stream routing by client name, sink adoption and recreation, master changes, event-stream reconnect, the config validation paths, the flock single-instance guard, clean shutdown, and the standalone installer with a stubbed `systemctl`.
+- **e2e** — runs the BATS suite in `tests/` against hermetic headless PipeWire sessions (own `XDG_RUNTIME_DIR`, stock WirePlumber config plus the volume-restore opt-out). It covers stream routing by client name, sink adoption and recreation, master changes, event-stream reconnect, the config validation paths, the flock single-instance guard, clean shutdown, and the standalone installer with a stubbed `systemctl`. Both jobs carry `timeout-minutes` bounds, and session logs upload on any non-success outcome (`!success()`), so a hung run fails with evidence instead of sitting out the default six-hour cap.
 
 The whole suite runs locally and never touches the running desktop session:
 
