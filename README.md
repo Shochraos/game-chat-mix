@@ -16,7 +16,7 @@ Two bash scripts that implement the "Game-Chat-Mix" dial found on many gaming he
 - Both sinks start at 50% so there is headroom in both directions. A sink is only rebuilt when its master changes, and its volume is carried over when that happens. Unplugging a DAC does not throw away your balance, and restarting the daemon does not touch it.
 - The daemon is self-healing: it waits with exponential backoff instead of exiting when no usable master sink exists yet, reconnects on its own if the `pactl` event stream ends, and recreates the sinks if something unloads them.
 - Bursts of events are coalesced, so a game opening a dozen streams at once costs one routing pass rather than a dozen.
-- Only one daemon runs at a time. It holds a `flock` for its whole lifetime, so a second copy — started by hand, by a second install method, or by a supervisor — logs a line and exits 0 instead of fighting over the remap sinks.
+- Only one daemon routes audio at a time. A second copy started by hand exits cleanly. The bundled supervisors wait for the lock, so one can take over when the current owner stops.
 - **WirePlumber must be told not to restore the two sinks' volumes**, or it overrides the 50% start. See "WirePlumber volume restore" below; every installation method ships the opt-out.
 
 ## Tests
@@ -88,7 +88,8 @@ Everything is an environment variable; there is nothing to edit in the scripts.
 | `EVENT_DEBOUNCE` | `0.05` | Seconds to keep collecting events before acting on a burst |
 | `RETRY_DELAY` | `1` | Seconds before the first retry; doubles on repeated failure |
 | `RETRY_DELAY_MAX` | `30` | Ceiling for that backoff |
-| `LOCK_FILE` | `$XDG_RUNTIME_DIR/gamechat_mix.lock` | Single-instance lock. A second daemon holding no lock exits immediately; point two daemons at different files only if they also drive different sinks. |
+| `LOCK_FILE` | `$XDG_RUNTIME_DIR/gamechat_mix.lock` | Single-instance lock. Use separate locks only for daemons that manage different sinks. |
+| `GAMECHAT_WAIT_FOR_LOCK` | `0` | Set to `1` in a supervisor to wait for the current owner to stop. |
 
 `gamechat_balance.sh`:
 
@@ -119,8 +120,8 @@ rather than copying them.
 
 The methods are independent but not exclusive: the DMS plugin can either manage
 the daemon itself or leave it to the systemd unit installed by one of the other
-two. The daemon takes a `flock` either way, so a second copy exits instead of
-fighting over the remap sinks.
+two. For a systemd-managed installation, turn off daemon management in the
+plugin. The widget and its keybinds still work.
 
 ### Nix flake
 
@@ -166,7 +167,8 @@ Home Manager — run the daemon for the graphical session:
     Service = {
       Type = "simple";
       ExecStart = lib.getExe inputs.game-chat-mix.packages.${pkgs.stdenv.hostPlatform.system}.gamechat_mix;
-      Restart = "always";
+      Environment = [ "GAMECHAT_WAIT_FOR_LOCK=1" ];
+      Restart = "on-failure";
       RestartSec = 5;
     };
 

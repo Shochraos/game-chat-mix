@@ -31,7 +31,7 @@ jobs:
       - name: shfmt
         run: >
           nix develop -c shfmt -d dms/gamechat_mix.sh dms/gamechat_balance.sh
-          tests/test_helper.bash tests/fixtures/systemctl-shim.sh
+          standalone/install.sh tests/test_helper.bash tests/fixtures/*.sh
 
       - name: nixfmt
         run: |
@@ -41,15 +41,18 @@ jobs:
       - name: Plugin bake proof
         run: |
           out=$(nix build --no-link --print-out-paths .#dms_plugin)
-          nix path-info -r "$out" | grep -q -- '-gamechat_mix$'
-          grep -q 'bakedMixCommand: "/nix/store/' "$out/GameChatMixDaemon.qml"
+          daemon=$(nix build --no-link --print-out-paths .#gamechat_mix)
+          nix path-info -r "$out" | grep -Fx "$daemon"
+          grep -Fq "$daemon/bin/gamechat_mix" "$out/GameChatMixDaemon.qml"
           if grep -q '@gamechat_mix@' "$out/GameChatMixDaemon.qml"; then
             echo "unsubstituted @gamechat_mix@ placeholder left in the built QML" >&2
             exit 1
           fi
-          grep -q 'siblingMixScript' "$out/GameChatMixDaemon.qml"
+          grep -Fq 'gamechat_mix.sh' "$out/GameChatMixDaemon.qml"
           test -x "$out/gamechat_mix.sh"
           test -x "$out/gamechat_balance.sh"
+          cmp dms/internal/qmldir "$out/internal/qmldir"
+          cmp dms/internal/GameChatState.qml "$out/internal/GameChatState.qml"
 
   e2e:
     name: PipeWire end-to-end tests

@@ -4,3 +4,5 @@ result-*
 .envrc
 .omp/
 /AGENTS.md
+/IDEA.md
+/.hermes/
