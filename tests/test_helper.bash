@@ -28,6 +28,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GCM_MIX_SCRIPT="${GCM_MIX_SCRIPT:-$REPO_ROOT/dms/gamechat_mix.sh}"
 GCM_BALANCE_SCRIPT="${GCM_BALANCE_SCRIPT:-$REPO_ROOT/dms/gamechat_balance.sh}"
 
+export LC_ALL=C
+
 GCM_MASTER="gcm_master"
 GCM_ALT_MASTER="gcm_alt"
 GCM_CHAT_SINK="discord_sink"
@@ -73,7 +75,8 @@ session_start() {
     "$run/wp-config/wireplumber.conf.d/"
   export WIREPLUMBER_CONFIG_DIR="$run/wp-config"
 
-  unset PULSE_SERVER PULSE_SINK PULSE_SOURCE PULSE_LATENCY_MSEC
+  export PULSE_SERVER="unix:$run/pulse/native"
+  unset PULSE_SINK PULSE_SOURCE PULSE_LATENCY_MSEC
   unset DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS
 
   if pactl info >/dev/null 2>&1; then
@@ -110,7 +113,8 @@ session_start() {
 }
 
 session_stop() {
-  daemon_stop
+  local daemon_status=0
+  daemon_stop || daemon_status=$?
   probes_stop
   if [ -n "${PW_PID:-}" ]; then
     kill "$PW_PID" "$PWP_PID" "$WP_PID" 2>/dev/null
@@ -121,10 +125,12 @@ session_stop() {
   PWP_PID=""
   WP_PID=""
   MASTER_MODULE_ID=""
+  return "$daemon_status"
 }
 
 session_reset() {
-  daemon_stop
+  local daemon_status=0
+  daemon_stop || daemon_status=$?
   probes_stop
   unload_remaps
   unload_null_sink "$GCM_ALT_MASTER"
@@ -132,6 +138,7 @@ session_reset() {
     MASTER_MODULE_ID=$(pactl load-module module-null-sink sink_name="$GCM_MASTER")
     export MASTER_MODULE_ID
   fi
+  return "$daemon_status"
 }
 
 daemon_start() {
@@ -142,6 +149,7 @@ daemon_start() {
     PATH="$PATH" \
     HOME="$HOME" \
     XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    PULSE_SERVER="$PULSE_SERVER" \
     XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
     XDG_CACHE_HOME="$XDG_CACHE_HOME" \
     HW_SINK="$GCM_MASTER" \
@@ -154,31 +162,41 @@ daemon_start() {
 }
 
 daemon_stop() {
-  local pid="${DAEMON_PID:-}"
-  if [ -z "$pid" ] && [ -n "${GCM_RUN:-}" ] && [ -f "$GCM_RUN/daemon.pid" ]; then
+  local pid="${DAEMON_PID:-}" timeout="${1:-10}" daemon_status=0 child=1
+  if [[ -z $pid && -n ${GCM_RUN:-} && -f $GCM_RUN/daemon.pid ]]; then
     pid=$(cat "$GCM_RUN/daemon.pid")
+    child=0
   fi
   [ -n "$pid" ] || return 0
-  kill -TERM "$pid" 2>/dev/null
-  (
-    sleep 10
-    kill -KILL "$pid" 2>/dev/null
-  ) &
-  local watchdog=$!
-  wait "$pid" 2>/dev/null
-  kill "$watchdog" 2>/dev/null
-  wait "$watchdog" 2>/dev/null
+  kill -TERM "$pid" 2>/dev/null || true
+  if ! wait_until "$timeout" daemon_gone "$pid"; then
+    printf 'daemon %s did not stop after TERM within %ss\n' "$pid" "$timeout" >&2
+    kill -KILL "$pid" 2>/dev/null || true
+    if ((child)); then wait "$pid" 2>/dev/null || true; fi
+    daemon_status=124
+  elif ((child)); then
+    wait "$pid" 2>/dev/null || daemon_status=$?
+    if ((daemon_status)); then
+      printf 'daemon %s exited with status %s\n' "$pid" "$daemon_status" >&2
+    fi
+  fi
   rm -f "$GCM_RUN/daemon.pid"
   DAEMON_PID=""
+  return "$daemon_status"
 }
 
 daemon_gone() {
-  [ ! -d "/proc/$DAEMON_PID" ]
+  [ ! -d "/proc/${1:-$DAEMON_PID}" ]
+}
+
+daemon_subscriber() {
+  pgrep -P "$DAEMON_PID" -f '(^|/)pactl subscribe$'
 }
 
 probe_start() {
   local pid
   env -i PATH="$PATH" HOME="$HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    PULSE_SERVER="$PULSE_SERVER" \
     paplay --device="$GCM_MASTER" --client-name="$1" --raw --rate=48000 \
     --channels=2 --format=s16le /dev/zero >/dev/null 2>&1 &
   pid=$!
@@ -207,7 +225,9 @@ sink_absent() {
 }
 
 sink_index() {
-  pactl list short sinks 2>/dev/null | awk -F'\t' -v want="$1" '$2 == want { print $1; exit }'
+  pactl list short sinks 2>/dev/null | awk -F'\t' -v want="$1" '
+    $2 == want && $1 ~ /^[0-9]+$/ { print $1; found = 1; exit }
+    END { exit !found }'
 }
 
 sink_volume() {
@@ -319,13 +339,16 @@ wait_volume() {
 
 wait_stream_on() {
   local client="$1" sink="$2" timeout="${3:-10}"
-  local target deadline
-  target=$(sink_index "$sink")
+  local target actual deadline
   deadline=$(($(date +%s) + timeout))
   while :; do
-    [ "$(stream_sink_index_of_client "$client")" = "$target" ] && return 0
+    actual=""
+    if target=$(sink_index "$sink") && [[ $target =~ ^[0-9]+$ ]]; then
+      actual=$(stream_sink_index_of_client "$client")
+      [[ $actual =~ ^[0-9]+$ && $actual == "$target" ]] && return 0
+    fi
     (($(date +%s) >= deadline)) && {
-      echo "timeout: '$client' never reached '$sink'" >&2
+      echo "timeout: '$client' never reached '$sink' (actual index '${actual:-missing}', target index '${target:-missing}'; logs in $GCM_LOGS)" >&2
       return 1
     }
     sleep 0.2

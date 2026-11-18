@@ -6,8 +6,9 @@ After=pipewire-pulse.service
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/gamechat_mix
-Restart=always
+ExecStart=:/usr/bin/env bash "%h/.local/bin/gamechat_mix"
+Environment=GAMECHAT_WAIT_FOR_LOCK=1
+Restart=on-failure
 RestartSec=5
 
 [Install]

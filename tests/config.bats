@@ -39,6 +39,12 @@ teardown() {
   [[ "$output" == *"INITIAL_VOLUME must be an integer percentage between 0 and 100: 'abc'"* ]]
 }
 
+@test "INITIAL_VOLUME that would overflow arithmetic is rejected" {
+  run timeout 3 env INITIAL_VOLUME=18446744073709551616 LOCK_FILE="$BATS_TEST_TMPDIR/config.lock" bash "$GCM_MIX_SCRIPT"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"INITIAL_VOLUME must be an integer percentage between 0 and 100"* ]]
+}
+
 @test "negative EVENT_DEBOUNCE is rejected" {
   run env EVENT_DEBOUNCE=-1 LOCK_FILE=/tmp/gcm-config-test.lock bash "$GCM_MIX_SCRIPT"
   [ "$status" -eq 2 ]
@@ -61,4 +67,42 @@ teardown() {
   run env DISCORD_SINK=same CATCHALL_SINK=same LOCK_FILE=/tmp/gcm-config-test.lock bash "$GCM_MIX_SCRIPT"
   [ "$status" -eq 2 ]
   [[ "$output" == *"DISCORD_SINK and CATCHALL_SINK must differ: 'same'"* ]]
+}
+
+@test "daemon_stop reports clean shutdown under errexit" {
+  GCM_RUN="$BATS_TEST_TMPDIR"
+  bash -c 'trap "exit 0" TERM; touch "$1"; while :; do sleep 0.05; done' bash "$GCM_RUN/ready" &
+  DAEMON_PID=$!
+  printf '%s\n' "$DAEMON_PID" >"$GCM_RUN/daemon.pid"
+  wait_until 4 test -f "$GCM_RUN/ready"
+
+  daemon_stop
+  [ ! -e "$GCM_RUN/daemon.pid" ]
+}
+
+@test "daemon_stop preserves a failing daemon exit status" {
+  GCM_RUN="$BATS_TEST_TMPDIR"
+  bash -c 'trap "exit 42" TERM; touch "$1"; while :; do sleep 0.05; done' bash "$GCM_RUN/ready" &
+  DAEMON_PID=$!
+  printf '%s\n' "$DAEMON_PID" >"$GCM_RUN/daemon.pid"
+  wait_until 4 test -f "$GCM_RUN/ready"
+
+  local stop_status=0
+  daemon_stop || stop_status=$?
+  [ "$stop_status" -eq 42 ]
+  [ ! -e "$GCM_RUN/daemon.pid" ]
+}
+
+@test "daemon_stop distinguishes a TERM timeout from a daemon exit" {
+  GCM_RUN="$BATS_TEST_TMPDIR"
+  bash -c 'trap "" TERM; touch "$1"; exec sleep 60' bash "$GCM_RUN/ready" &
+  DAEMON_PID=$!
+  local stubborn_pid=$DAEMON_PID stop_status=0
+  printf '%s\n' "$DAEMON_PID" >"$GCM_RUN/daemon.pid"
+  wait_until 4 test -f "$GCM_RUN/ready"
+
+  daemon_stop 1 || stop_status=$?
+  [ "$stop_status" -eq 124 ]
+  [ ! -d "/proc/$stubborn_pid" ]
+  [ ! -e "$GCM_RUN/daemon.pid" ]
 }

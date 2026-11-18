@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -u
+export LC_ALL=C
 
 DISCORD_SINK="${DISCORD_SINK:-discord_sink}"
 CATCHALL_SINK="${CATCHALL_SINK:-catchall_sink}"
@@ -16,6 +17,7 @@ LOCK_FILE="${LOCK_FILE:-${XDG_RUNTIME_DIR:-/tmp}/gamechat_mix.lock}"
 
 declare -A SINK_INDEX_BY_NAME=()
 declare -A OWNED_MODULE=()
+declare -A PENDING_VOLUME=()
 SUBSCRIBER_PID=""
 
 log() {
@@ -28,11 +30,21 @@ die() {
 }
 
 acquire_lock() {
+  local status
   exec 9>"$LOCK_FILE" || die "cannot open lock file '${LOCK_FILE}'"
-  if ! flock -n 9; then
+  flock -n -E 75 9 && return 0
+  status=$?
+  ((status == 75)) || die "cannot acquire lock '${LOCK_FILE}'"
+  if [[ ${GAMECHAT_WAIT_FOR_LOCK:-0} != 1 ]]; then
     log "another instance already holds '${LOCK_FILE}', nothing to do"
     exit 0
   fi
+  log "waiting for lock '${LOCK_FILE}'"
+  while :; do
+    flock -w 0.25 -E 75 9 && return 0
+    status=$?
+    ((status == 75)) || die "cannot acquire lock '${LOCK_FILE}'"
+  done
 }
 
 probe_chat_match() {
@@ -46,9 +58,10 @@ validate_config() {
     die "CHAT_MATCH is not a valid extended regular expression: '${CHAT_MATCH}'"
   fi
 
-  if ! [[ $INITIAL_VOLUME =~ ^[0-9]+$ ]] || ((INITIAL_VOLUME > 100)); then
+  if ! [[ $INITIAL_VOLUME =~ ^0*(100|[1-9][0-9]?|0)$ ]]; then
     die "INITIAL_VOLUME must be an integer percentage between 0 and 100: '${INITIAL_VOLUME}'"
   fi
+  INITIAL_VOLUME=${BASH_REMATCH[1]}
 
   if ! [[ $EVENT_DEBOUNCE =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     die "EVENT_DEBOUNCE must be a number of seconds: '${EVENT_DEBOUNCE}'"
@@ -71,7 +84,7 @@ refresh_sinks() {
   SINK_INDEX_BY_NAME=()
   local index name
   while IFS=$'\t' read -r index name _; do
-    [[ $index =~ ^[0-9]+$ ]] || continue
+    [[ $index =~ ^[0-9]+$ && -n $name ]] || continue
     SINK_INDEX_BY_NAME["$name"]=$index
   done < <(pactl list short sinks 2>/dev/null)
 }
@@ -114,17 +127,31 @@ refresh_owned_modules() {
 }
 
 sink_volume_percent() {
-  pactl get-sink-volume "${1:-}" 2>/dev/null | awk '
+  local volumes
+  volumes=$(pactl get-sink-volume "$1" 2>/dev/null) || return 1
+  awk -v expected="${2:-}" '
       NR == 1 {
-        for (i = 1; i <= NF; i++)
-          if ($i ~ /^[0-9]+%$/) { print substr($i, 1, length($i) - 1); exit }
-      }'
+        for (i = 1; i <= NF; i++) {
+          if ($i !~ /^[0-9]+%$/) continue
+          percent = substr($i, 1, length($i) - 1)
+          if (expected == "") { print percent; exit }
+          if (percent != expected) exit 1
+          found = 1
+        }
+        exit !found
+      }
+      END { if (!NR) exit 1 }' <<<"$volumes"
 }
 
-set_sink_volume() {
-  local sink="${1:-}" percent="${2:-}" attempt
+apply_pending_volume() {
+  local sink="$1" percent="${PENDING_VOLUME[$1]:-}" attempt
+  [[ -n $percent ]] || return 0
   for ((attempt = 0; attempt < 20; attempt++)); do
-    pactl set-sink-volume "$sink" "${percent}%" >/dev/null 2>&1 && return 0
+    if pactl set-sink-volume "$sink" "${percent}%" >/dev/null 2>&1 &&
+      sink_volume_percent "$sink" "$percent"; then
+      unset 'PENDING_VOLUME[$sink]'
+      return 0
+    fi
     sleep 0.05
   done
   log "failed to set volume of '${sink}' to ${percent}%"
@@ -147,7 +174,7 @@ resolve_hw_sink() {
 
   pactl list short sinks 2>/dev/null |
     awk -F'\t' -v chat="$DISCORD_SINK" -v rest="$CATCHALL_SINK" '
-      $2 != chat && $2 != rest { print $2; exit }'
+      $1 ~ /^[0-9]+$/ && $2 != "" && $2 != chat && $2 != rest { print $2; exit }'
 }
 
 ensure_remap_sink() {
@@ -157,24 +184,34 @@ ensure_remap_sink() {
   local id="" master=""
   IFS=$'\t' read -r id master < <(remap_module_info "$name") || true
 
-  local volume=""
+  local volume="${PENDING_VOLUME[$name]:-}"
+  local index="${SINK_INDEX_BY_NAME[$name]:-}"
   if [[ -n $id ]]; then
-    if [[ $master == "$hw" && -n ${SINK_INDEX_BY_NAME[$name]:-} ]]; then
-      return 0
+    if [[ $master == "$hw" && -n $index ]]; then
+      apply_pending_volume "$name"
+      return
     fi
-    [[ -n ${SINK_INDEX_BY_NAME[$name]:-} ]] && volume=$(sink_volume_percent "$name")
-    pactl unload-module "$id" >/dev/null 2>&1 ||
+    if [[ -n $index && -z $volume ]]; then
+      if ! volume=$(sink_volume_percent "$name"); then
+        log "failed to read volume of '${name}' before replacing it"
+        return 1
+      fi
+    fi
+    if ! pactl unload-module "$id" >/dev/null 2>&1; then
       log "failed to unload stale module ${id} for sink '${name}'"
+      return 1
+    fi
   fi
 
+  if [[ -n $volume ]]; then PENDING_VOLUME["$name"]=$volume; fi
   if ! pactl load-module module-remap-sink sink_name="$name" master="$hw" \
     sink_properties=device.description="$description" >/dev/null 2>&1; then
     log "failed to create remap sink '${name}' on master '${hw}'"
     return 1
   fi
 
-  set_sink_volume "$name" "${volume:-$INITIAL_VOLUME}"
-  return 0
+  PENDING_VOLUME["$name"]="${volume:-$INITIAL_VOLUME}"
+  apply_pending_volume "$name"
 }
 
 sync_sinks() {
@@ -240,7 +277,7 @@ route_once() {
 
   local id sink owner node app client binary target target_index
   while IFS=$'\037' read -r id sink owner node app client binary; do
-    [[ $id =~ ^[0-9]+$ ]] || continue
+    [[ $id =~ ^[0-9]+$ && $sink =~ ^[0-9]+$ ]] || continue
     is_own_stream "$owner" "$node" && continue
 
     if is_chat_stream "${app}|${client}|${binary}|${node}"; then
@@ -259,28 +296,47 @@ route_once() {
 }
 
 handle_events() {
-  local line sync route
-  while IFS= read -r line; do
-    sync=0
-    route=0
-    while :; do
-      case $line in
-      *"'remove' on sink-input "*) ;;
-      *"on sink-input "*) route=1 ;;
-      *"'change' on sink "*) ;;
-      *"on sink "*) sync=1 ;;
-      *"on server"*) sync=1 ;;
-      esac
-      IFS= read -r -t "$EVENT_DEBOUNCE" line || break
-    done
-
-    if ((sync)); then
-      sync_sinks || return 1
-      route=1
+  local resync_interval_us=5000000 debounce_us
+  debounce_us=$(awk -v seconds="$EVENT_DEBOUNCE" -v cap="$resync_interval_us" '
+    BEGIN { us = seconds * 1000000; printf "%.0f", us < cap ? us : cap }')
+  local line partial="" sync=0 route=0 batch_until=0
+  local now resync_at read_until remaining timeout read_status
+  resync_at=$((${EPOCHREALTIME/./} + resync_interval_us))
+  while :; do
+    now=${EPOCHREALTIME/./}
+    if ((now >= resync_at || (batch_until && now >= batch_until))); then
+      if ((sync || now >= resync_at)); then
+        sync_sinks || return 1
+        resync_at=$((${EPOCHREALTIME/./} + resync_interval_us))
+        route=1
+      fi
+      if ((route)); then route_once || return 1; fi
+      sync=0 route=0 batch_until=0
+      continue
     fi
-    ((route)) && route_once
+
+    read_until=$resync_at
+    if ((batch_until && batch_until < read_until)); then read_until=$batch_until; fi
+    remaining=$((read_until - now))
+    printf -v timeout '%d.%06d' "$((remaining / 1000000))" "$((remaining % 1000000))"
+    if IFS= read -r -t "$timeout" line; then
+      line=$partial$line
+      partial=""
+    else
+      read_status=$?
+      ((read_status > 128)) || return 0
+      partial+=$line
+      continue
+    fi
+
+    case $line in
+    *"'remove' on sink-input "* | *"'change' on sink "*) continue ;;
+    *"on sink-input "*) route=1 ;;
+    *"on sink "* | *"on server"*) sync=1 ;;
+    *) continue ;;
+    esac
+    if ((batch_until == 0)); then batch_until=$((${EPOCHREALTIME/./} + debounce_us)); fi
   done
-  return 0
 }
 
 stop_subscriber() {
@@ -292,7 +348,7 @@ stop_subscriber() {
 
 watch_events() {
   local status=0
-  exec 3< <(pactl subscribe 2>/dev/null 9>&-)
+  exec 3< <(exec pactl subscribe 2>/dev/null 9>&-)
   SUBSCRIBER_PID=$!
   handle_events <&3 || status=$?
   exec 3<&-
@@ -302,9 +358,9 @@ watch_events() {
 
 main() {
   validate_config
-  acquire_lock
   trap 'exit 0' INT TERM
   trap stop_subscriber EXIT
+  acquire_lock
 
   local delay=$RETRY_DELAY
   while :; do
