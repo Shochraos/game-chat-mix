@@ -20,6 +20,29 @@ require() {
   }
 }
 
+valid_bin_dir() {
+  local LC_ALL=C
+  [[ $BIN_DIR == /* && $BIN_DIR != *[[:cntrl:]]* && $BIN_DIR/ != */../* ]]
+}
+
+render_unit() {
+  local executable="${BIN_DIR}/gamechat_mix" line
+  executable=${executable//\\/\\\\}
+  executable=${executable//\"/\\\"}
+  executable=${executable//%/%%}
+  while IFS= read -r line || [[ -n $line ]]; do
+    case $line in
+    ExecStart=*) printf 'ExecStart=:/usr/bin/env bash "%s"\n' "$executable" ;;
+    *) printf '%s\n' "$line" ;;
+    esac
+  done <"${here}/gamechat-mix.service"
+}
+
+if ! valid_bin_dir; then
+  log 'BIN_DIR must be an absolute path without control characters or .. components'
+  exit 1
+fi
+
 require install
 require pactl
 
@@ -37,16 +60,21 @@ install -Dm644 "${root}/wireplumber/99-gamechat-no-volume-restore.conf" \
 log "installed the WirePlumber volume-restore opt-out into '${WIREPLUMBER_DIR}'"
 
 if ! command -v systemctl >/dev/null 2>&1; then
-  log "systemctl not found; start the daemon yourself with '${BIN_DIR}/gamechat_mix &',"
+  printf -v start_command '%q' "${BIN_DIR}/gamechat_mix"
+  log "systemctl not found; start the daemon yourself with '${start_command} &',"
   log "and restart WirePlumber so the volume-restore opt-out applies"
   exit 0
 fi
 
-install -Dm644 "${here}/gamechat-mix.service" "${UNIT_DIR}/gamechat-mix.service"
+unit_tmp=$(mktemp)
+trap 'rm -f -- "$unit_tmp"' EXIT
+render_unit >"$unit_tmp"
+install -Dm644 "$unit_tmp" "${UNIT_DIR}/gamechat-mix.service"
 log "installed gamechat-mix.service into '${UNIT_DIR}'"
 
 systemctl --user daemon-reload
-systemctl --user enable --now gamechat-mix.service
+systemctl --user enable gamechat-mix.service
+systemctl --user restart gamechat-mix.service
 systemctl --user restart wireplumber.service
 log "gamechat-mix.service enabled and started"
 

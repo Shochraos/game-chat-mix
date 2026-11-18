@@ -25,17 +25,33 @@ Three environment variables override the destinations:
 | `UNIT_DIR` | `$XDG_CONFIG_HOME/systemd/user` |
 | `WIREPLUMBER_DIR` | `$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d` |
 
+`BIN_DIR` must be an absolute path without control characters or `..` path
+components. Spaces are supported: for example,
+`BIN_DIR="$HOME/My Tools/bin" ./standalone/install.sh`. The installed unit uses
+that directory directly, regardless of `PATH`. Re-running the installer restarts
+the unit so it picks up the new executable path.
+
 Afterwards:
 
 1. Select the chat sink ("Discord") as the output device inside your chat client.
 2. Bind `gamechat_balance game`, `gamechat_balance chat` and
    `gamechat_balance reset` to hotkeys in your compositor or desktop environment.
 
-The daemon holds a `flock` on `$XDG_RUNTIME_DIR/gamechat_mix.lock`, so a second
-copy started by hand exits immediately instead of fighting the unit over the
-remap sinks.
+The daemon holds a `flock` on `$XDG_RUNTIME_DIR/gamechat_mix.lock`. If the unit
+starts while a copy already owns the lock, it waits until that copy exits. A
+copy started by hand while the lock is held exits successfully without touching
+the sinks. Systemd restarts the daemon only on failure.
 
-To remove it again:
+The hotkey helper serializes its own invocations with a separate per-user lock,
+`$XDG_RUNTIME_DIR/gamechat_balance.lock` (or `gamechat-mix/gamechat_balance.lock`
+under the user cache directory if `XDG_RUNTIME_DIR` is unset). All three commands
+check both sinks before writing. If the first write succeeds and the second
+fails, the helper reports a partial update and exits with status 2 instead of
+rolling back and potentially overwriting a change from another mixer. Other
+handled failures exit with status 1.
+
+To remove it again, substitute your destination overrides for the default paths
+below if you used any:
 
 ```bash
 systemctl --user disable --now gamechat-mix.service

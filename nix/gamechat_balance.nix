@@ -1,15 +1,19 @@
 {
   lib,
   writeShellApplication,
+  coreutils,
   gawk,
   pulseaudio,
+  util-linux,
 }:
 writeShellApplication {
   name = "gamechat_balance";
 
   runtimeInputs = [
+    coreutils
     gawk
     pulseaudio
+    util-linux
   ];
 
   text = builtins.readFile ../dms/gamechat_balance.sh;
