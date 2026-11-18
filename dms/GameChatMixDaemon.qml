@@ -1,132 +1,251 @@
 import QtQuick
 import Quickshell.Io
-import Quickshell.Services.Pipewire
 import qs.Modules.Plugins
+import "internal" as Mix
 
 PluginComponent {
     id: root
 
-    readonly property string chatSinkName: pluginData.chatSink || "discord_sink"
-    readonly property string gameSinkName: pluginData.gameSink || "catchall_sink"
+    readonly property var mix: Mix.GameChatState
     readonly property int step: pluginData.step || 2
-    readonly property int resetVolume: 50
-    readonly property bool manageDaemon: pluginData.manageDaemon !== undefined ? pluginData.manageDaemon : true
     readonly property string bakedMixCommand: "@gamechat_mix@"
-    readonly property string siblingMixScript: Qt.resolvedUrl("gamechat_mix.sh").toString().replace("file://", "")
-    readonly property string mixCommand: pluginData.mixCommand || (bakedMixCommand.startsWith("/") ? bakedMixCommand : siblingMixScript)
+    readonly property string siblingMixScript: decodeURIComponent(Qt.resolvedUrl("gamechat_mix.sh").toString().replace(/^file:\/\//, ""))
+    readonly property var desiredCommand: parseCommand(pluginData.mixCommand || "")
+    readonly property string commandError: desiredCommand.length ? "" : "Check the daemon command: quote paths with spaces and close any quotes."
+    readonly property bool configured: mix.supervisor === root && !!pluginService && !!pluginId
+    readonly property bool shouldManage: configured && mix.manageDaemon && !mix.nameError && !commandError
+    readonly property string desiredKey: shouldManage ? JSON.stringify(desiredCommand) : ""
+    property string activeKey: ""
+    property string phase: "idle"
+    property string failure: ""
+    property string lastDiagnostic: ""
+    property string stderrTail: ""
+    property bool tailTruncated: false
+    readonly property int diagnosticLimit: 320
+    property var recentWarnings: []
+    property double lastWarningAt: 0
 
-    readonly property var chatNode: Pipewire.nodes.values.find(node => node.name === root.chatSinkName) ?? null
-    readonly property var gameNode: Pipewire.nodes.values.find(node => node.name === root.gameSinkName) ?? null
-    readonly property var trackedNodes: [root.chatNode, root.gameNode].filter(node => node !== null)
-
-    function percentOf(node) {
-        return node?.audio ? Math.round(node.audio.volume * 100) : -1;
+    Component.onCompleted: {
+        if (!mix.supervisor)
+            mix.supervisor = root;
+    }
+    Component.onDestruction: {
+        if (mix?.supervisor === root)
+            mix.supervisor = null;
     }
 
-    function clampPercent(value) {
-        return Math.max(0, Math.min(100, Math.round(value)));
+    function parseCommand(command) {
+        if (!command.trim())
+            return bakedMixCommand.startsWith("/") ? [bakedMixCommand] : [siblingMixScript];
+        const words = [];
+        let word = "";
+        let quote = "";
+        let inWord = false;
+        for (let i = 0; i < command.length; i++) {
+            const ch = command[i];
+            if (ch === "\\" && quote !== "'") {
+                if (++i === command.length)
+                    return [];
+                word += command[i];
+                inWord = true;
+            } else if (quote) {
+                if (ch === quote)
+                    quote = "";
+                else
+                    word += ch;
+            } else if (ch === "'" || ch === '"') {
+                quote = ch;
+                inWord = true;
+            } else if (/\s/.test(ch)) {
+                if (inWord) {
+                    words.push(word);
+                    word = "";
+                    inWord = false;
+                }
+            } else {
+                word += ch;
+                inWord = true;
+            }
+        }
+        if (quote)
+            return [];
+        if (inWord)
+            words.push(word);
+        return words[0] ? words : [];
     }
 
-    function writePercent(node, percent) {
-        node.audio.volume = percent / 100;
+    function consumeStderr(chunk) {
+        let start = 0;
+        while (start < chunk.length) {
+            const newline = chunk.indexOf("\n", start);
+            const end = newline < 0 ? chunk.length : newline;
+            const length = end - start;
+            tailTruncated = tailTruncated || stderrTail.length + length > diagnosticLimit;
+            stderrTail = (stderrTail + chunk.slice(Math.max(start, end - diagnosticLimit), end)).slice(-diagnosticLimit);
+            if (newline < 0)
+                return;
+            finishDiagnostic();
+            start = end + 1;
+        }
+    }
+
+    function finishDiagnostic() {
+        const line = stderrTail.replace(/[\x00-\x1f\x7f]/g, " ").trim();
+        const message = tailTruncated ? `…${line}` : line;
+        stderrTail = "";
+        tailTruncated = false;
+        if (!line || /^gamechat: (?:retrying|event stream ended, reconnecting) in \d+s$/.test(line))
+            return;
+        lastDiagnostic = message;
+        const now = Date.now();
+        if (!recentWarnings.includes(message) && now - lastWarningAt >= 5000) {
+            recentWarnings = [...recentWarnings.slice(-7), message];
+            lastWarningAt = now;
+            console.warn("GameChatMix:", message);
+        }
     }
 
     function mixReport() {
         return JSON.stringify({
-            game: root.percentOf(root.gameNode),
-            chat: root.percentOf(root.chatNode),
-            managedDaemon: root.manageDaemon
+            game: mix.gamePercent,
+            chat: mix.chatPercent,
+            managedDaemon: mix.manageDaemon
         });
     }
 
     function shiftBalance(chatDelta, gameDelta) {
-        const chat = percentOf(chatNode);
-        const game = percentOf(gameNode);
-        if (chat < 0 || game < 0)
+        if (!mix.ready)
             return "SINKS_UNAVAILABLE";
-        writePercent(chatNode, clampPercent(chat + chatDelta));
-        writePercent(gameNode, clampPercent(game + gameDelta));
+        const chat = mix.chatPercent;
+        const game = mix.gamePercent;
+        mix.chatNode.audio.volume = mix.clampPercent(chat + chatDelta) / 100;
+        mix.gameNode.audio.volume = mix.clampPercent(game + gameDelta) / 100;
         return mixReport();
     }
 
-    PwObjectTracker {
-        objects: root.trackedNodes
+    onDesiredKeyChanged: {
+        retryTimer.stop();
+        reconcileTimer.restart();
+    }
+
+    function reconcile() {
+        if (phase === "stopping")
+            return;
+        if (mixProcess.running) {
+            if (activeKey !== desiredKey) {
+                phase = "stopping";
+                mixProcess.running = false;
+            }
+            return;
+        }
+        failure = "";
+        lastDiagnostic = "";
+        if (shouldManage)
+            startDaemon();
+        else
+            phase = "idle";
+    }
+
+    function startDaemon() {
+        if (!shouldManage || mixProcess.running)
+            return;
+        activeKey = desiredKey;
+        stderrTail = "";
+        tailTruncated = false;
+        phase = "starting";
+        mixProcess.command = desiredCommand;
+        mixProcess.running = true;
+    }
+
+    function finishRun(reason, retry) {
+        finishDiagnostic();
+        if (phase === "stopping" || activeKey !== desiredKey) {
+            phase = "idle";
+            reconcileTimer.restart();
+            return;
+        }
+        failure = reason;
+        phase = retry ? "retry" : "stopped";
+        if (retry)
+            retryTimer.restart();
     }
 
     Process {
         id: mixProcess
-        command: root.mixCommand.split(/\s+/).filter(part => part.length > 0)
-        running: false
-
-        stderr: StdioCollector {
-            onStreamFinished: {
-                if (text && text.trim())
-                    console.warn("GameChatMix daemon:", text.trim());
+        environment: ({
+            GAMECHAT_WAIT_FOR_LOCK: "1",
+            CATCHALL_SINK: root.mix.managedGameName,
+            DISCORD_SINK: root.mix.managedChatName
+        })
+        stderr: SplitParser {
+            splitMarker: ""
+            onRead: chunk => root.consumeStderr(chunk)
+        }
+        onStarted: {
+            if (root.phase === "starting") {
+                root.failure = "";
+                root.phase = "running";
             }
         }
-
-        onExited: exitCode => {
-            if (exitCode === 0)
-                return;
-            console.warn("GameChatMix daemon exited:", exitCode);
-            if (root.manageDaemon)
-                mixRestartTimer.start();
+        onRunningChanged: {
+            if (!running && root.phase === "starting")
+                root.finishRun("Could not start the routing daemon.", true);
+            else if (!running && root.phase === "stopping")
+                root.finishRun("", false);
+        }
+        onExited: (exitCode, exitStatus) => {
+            const failed = exitCode !== 0 || exitStatus !== 0;
+            const reason = exitStatus !== 0 ? "The routing daemon crashed."
+                : failed ? `The routing daemon exited (code ${exitCode}).` : "The routing daemon stopped.";
+            root.finishRun(reason, failed);
         }
     }
 
     Timer {
-        id: mixStartTimer
+        id: reconcileTimer
         interval: 100
-        running: root.manageDaemon
-        onTriggered: mixProcess.running = true
+        onTriggered: root.reconcile()
     }
 
     Timer {
-        id: mixRestartTimer
+        id: retryTimer
         interval: 5000
-        onTriggered: mixProcess.running = root.manageDaemon
+        onTriggered: root.startDaemon()
     }
 
-    onManageDaemonChanged: {
-        if (!manageDaemon) {
-            mixRestartTimer.stop();
-            mixProcess.running = false;
-        }
-    }
+    Loader {
+        active: root.mix.supervisor === root
+        sourceComponent: IpcHandler {
+            target: "gamechat"
 
-    IpcHandler {
-        target: "gamechat"
+            function game(): string {
+                return root.shiftBalance(-root.step, root.step);
+            }
 
-        function game(): string {
-            return root.shiftBalance(-root.step, root.step);
-        }
+            function chat(): string {
+                return root.shiftBalance(root.step, -root.step);
+            }
 
-        function chat(): string {
-            return root.shiftBalance(root.step, -root.step);
-        }
+            function reset(): string {
+                if (!root.mix.ready)
+                    return "SINKS_UNAVAILABLE";
+                root.mix.setMix(50);
+                return root.mixReport();
+            }
 
-        function reset(): string {
-            if (root.percentOf(root.chatNode) < 0 || root.percentOf(root.gameNode) < 0)
-                return "SINKS_UNAVAILABLE";
-            root.writePercent(root.chatNode, root.resetVolume);
-            root.writePercent(root.gameNode, root.resetVolume);
-            return root.mixReport();
-        }
+            function setMix(chatPercent: string): string {
+                const parsed = parseInt(chatPercent, 10);
+                if (isNaN(parsed))
+                    return "INVALID_PERCENT";
+                if (!root.mix.ready)
+                    return "SINKS_UNAVAILABLE";
+                root.mix.setMix(parsed);
+                return root.mixReport();
+            }
 
-        function setMix(chatPercent: string): string {
-            const parsed = parseInt(chatPercent, 10);
-            if (isNaN(parsed))
-                return "INVALID_PERCENT";
-            if (root.percentOf(root.chatNode) < 0 || root.percentOf(root.gameNode) < 0)
-                return "SINKS_UNAVAILABLE";
-            const target = root.clampPercent(parsed);
-            root.writePercent(root.chatNode, target);
-            root.writePercent(root.gameNode, 100 - target);
-            return root.mixReport();
-        }
-
-        function status(): string {
-            return root.mixReport();
+            function status(): string {
+                return root.mixReport();
+            }
         }
     }
 }
