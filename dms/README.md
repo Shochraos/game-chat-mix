@@ -1,7 +1,7 @@
 # DuxShell (DankMaterialShell) plugin
 
 A composite [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell)
-plugin (`id = gamechatMix`, requires DMS >= 1.5.0) with two surfaces:
+plugin (`id = gamechatMix`, requires DMS >= 2.0.0) with two surfaces:
 
 - **Widget:** a DankBar pill showing Game / Chat and a popout with one slider.
   Drag the slider or use the arrow keys. Left favors Game, right favors Chat.
@@ -11,7 +11,7 @@ plugin (`id = gamechatMix`, requires DMS >= 1.5.0) with two surfaces:
 
 The slider writes directly to PipeWire. Both labels report their actual sink
 volume, even when only one sink is available. When a sink is missing, the
-slider has no thumb and the popout names the missing sink after a short wait.
+slider is disabled and the popout names the missing sink after a short wait.
 
 ![Offscreen preview of the mix popout with sample Game and Chat volumes](../assets/screenshot.png)
 
